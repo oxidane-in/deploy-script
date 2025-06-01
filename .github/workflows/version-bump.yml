@@ -1,6 +1,9 @@
 name: Version Bump and Merge
 
 on:
+  push:
+    branches:
+      - 'release/**'  # Trigger on any push to release branches
   workflow_dispatch:
     inputs:
       release_version:
