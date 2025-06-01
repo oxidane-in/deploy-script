@@ -1,10 +1,15 @@
 name: Release
 
+# ── 1) Trigger conditions ─────────────────────────────────────────────
 on:
   push:
     branches:
-      - "release/**" # Trigger on push to any release branch
-  workflow_dispatch: # Optional: Allow manual trigger
+      - "release/**"
+  workflow_dispatch:
+
+# ── 2) Grant “contents: write” so that GITHUB_TOKEN can create a release ─
+permissions:
+  contents: write
 
 env:
   MAVEN_OPTS: -Dmaven.repo.local=.m2/repository
@@ -86,7 +91,7 @@ jobs:
 
             ### Bug Fixes
             - 
-            
+
             ### Changes
             -
           draft: false

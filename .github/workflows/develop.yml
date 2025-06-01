@@ -26,7 +26,7 @@ jobs:
           distribution: "temurin"
           java-version: "21"
           cache: "maven"
-          cache-dependency-path: "**/pom.xml"  # This will cache the Maven dependencies
+          cache-dependency-path: "pom.xml"  # Using direct path to pom.xml
 
       - name: Build and test
         run: |
