@@ -1,38 +1,197 @@
-# name: Release Build and Test
+name: Release Workflow
 
-# on:
-#   push:
-#     branches:
-#       - "release/**"
-#   pull_request:
-#     branches:
-#       - "release/**"
-#   workflow_dispatch:
+on:
+  push:
+    branches:
+      - "release/**"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version (e.g., 1.0.0)"
+        required: true
+        default: ""
 
-# permissions:
-#   contents: read
-#   pull-requests: read
+permissions:
+  contents: write
+  pull-requests: write
 
-# env:
-#   MAVEN_OPTS: -Dmaven.repo.local=.m2/repository
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
 
-# jobs:
-#   build-and-test:
-#     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "maven"
+          cache-dependency-path: "pom.xml"
 
-#       - name: Set up JDK 21
-#         uses: actions/setup-java@v4
-#         with:
-#           distribution: "temurin"
-#           java-version: "21"
-#           cache: "maven"
-#           cache-dependency-path: "pom.xml"
+      - name: Build and test with Maven
+        run: mvn -B clean verify
 
-#       - name: Build and test
-#         run: mvn -B clean verify
+  version-bump-and-merge:
+    name: Version Bump and Merge
+    needs: build-and-test
+    if: ${{ (github.ref == format('refs/heads/{0}', github.ref_name) && startsWith(github.ref_name, 'release/')) || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }} # Checkout the specific ref that triggered the workflow
+          fetch-depth: 0 # Required for tagging and history
+          token: ${{ secrets.GITHUB_TOKEN }} # Use GITHUB_TOKEN
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "maven"
+          cache-dependency-path: "pom.xml"
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "gh-actions-bot@example.com"
+
+      - name: Determine Versions
+        id: version
+        run: |
+          CURRENT_POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "Current POM version on ${{ github.ref_name }}: $CURRENT_POM_VERSION"
+
+          if [[ -n "${{ github.event.inputs.release_version }}" ]]; then
+            RELEASE_VERSION="${{ github.event.inputs.release_version }}"
+            echo "Using release version from workflow dispatch input: $RELEASE_VERSION"
+          else
+            if [[ "$CURRENT_POM_VERSION" != *"-SNAPSHOT" ]]; then
+              echo "Error: Current POM version ($CURRENT_POM_VERSION) on branch ${{ github.ref_name }} is not a SNAPSHOT version."
+              echo "Push triggers expect release branches to use SNAPSHOT versions until finalized."
+              exit 1
+            fi
+            RELEASE_VERSION="${CURRENT_POM_VERSION%-SNAPSHOT}"
+            echo "Derived release version from POM: $RELEASE_VERSION"
+          fi
+
+          VERSION_CORE="${RELEASE_VERSION##v}"
+          IFS='.' read -r -a parts <<< "$VERSION_CORE"
+          major="${parts[0]}"
+          minor="${parts[1]}"
+          patch="${parts[2]}"
+
+          if [[ -z "$major" || -z "$minor" || -z "$patch" ]]; then
+            echo "Error: Could not parse RELEASE_VERSION ($RELEASE_VERSION) into X.Y.Z format."
+            exit 1
+          fi
+
+          NEXT_PATCH=$((patch + 1))
+          NEXT_SNAPSHOT_VERSION="$major.$minor.${NEXT_PATCH}-SNAPSHOT"
+          echo "Calculated next snapshot version: $NEXT_SNAPSHOT_VERSION"
+
+          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "next_snapshot_version=$NEXT_SNAPSHOT_VERSION" >> $GITHUB_OUTPUT
+          echo "effective_release_branch_name=release/v$RELEASE_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Prepare Release Branch and Set Release Version in POM
+        id: prepare_branch
+        run: |
+          TARGET_BRANCH=""
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TARGET_BRANCH="${{ steps.version.outputs.effective_release_branch_name }}"
+            echo "Workflow dispatch: Ensuring branch $TARGET_BRANCH exists and is checked out."
+            if git rev-parse --verify "origin/$TARGET_BRANCH" >/dev/null 2>&1; then
+              echo "Branch $TARGET_BRANCH exists remotely. Checking out and resetting to remote state."
+              git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+            elif git rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
+              echo "Branch $TARGET_BRANCH exists locally. Checking out."
+              git checkout "$TARGET_BRANCH"
+            else 
+              echo "Branch $TARGET_BRANCH does not exist. Creating from current ref (${{ github.ref_name }})."
+              git checkout -b "$TARGET_BRANCH"
+            fi
+          else
+            # Push event, already on the correct branch (${{ github.ref_name }})
+            TARGET_BRANCH="${{ github.ref_name }}"
+            echo "Push event: Operating on current branch $TARGET_BRANCH."
+          fi
+
+          echo "Setting POM version to ${{ steps.version.outputs.release_version }} on branch $TARGET_BRANCH"
+          mvn versions:set -DnewVersion=${{ steps.version.outputs.release_version }} -DgenerateBackupPoms=false
+          git add pom.xml
+          git commit -m "Release: Prepare release v${{ steps.version.outputs.release_version }}"
+
+          echo "Pushing release version commit to $TARGET_BRANCH"
+          git push origin "$TARGET_BRANCH"
+
+          echo "actual_branch_name=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Tag and Push Release
+        run: |
+          TAG_NAME="v${{ steps.version.outputs.release_version }}"
+          echo "Creating and pushing tag $TAG_NAME"
+          git tag "$TAG_NAME" -m "Release $TAG_NAME"
+          git push origin "$TAG_NAME"
+
+      - name: Bump to Next Snapshot Version in POM
+        run: |
+          echo "Setting POM version to ${{ steps.version.outputs.next_snapshot_version }} on branch ${{ steps.prepare_branch.outputs.actual_branch_name }}"
+          mvn versions:set -DnewVersion=${{ steps.version.outputs.next_snapshot_version }} -DgenerateBackupPoms=false
+          git add pom.xml
+          git commit -m "Development: Bump version to ${{ steps.version.outputs.next_snapshot_version }}"
+
+          echo "Pushing next snapshot version commit to ${{ steps.prepare_branch.outputs.actual_branch_name }}"
+          git push origin "${{ steps.prepare_branch.outputs.actual_branch_name }}"
+
+      - name: Create PR to Develop Branch
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6 # Updated to v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # For overriding branch protections, a PAT with 'repo' scope might be needed here.
+          # Store it as a secret (e.g., PAT_TOKEN) and use `token: ${{ secrets.PAT_TOKEN }}`.
+          commit-message: "chore: Merge ${{ steps.prepare_branch.outputs.actual_branch_name }} into develop post-release"
+          title: "Merge ${{ steps.prepare_branch.outputs.actual_branch_name }} → develop (Post v${{ steps.version.outputs.release_version }})"
+          body: |
+            This PR merges changes from **${{ steps.prepare_branch.outputs.actual_branch_name }}** into **develop**.
+
+            - Release **v${{ steps.version.outputs.release_version }}** has been tagged and completed.
+            - The branch `${{ steps.prepare_branch.outputs.actual_branch_name }}` has been updated to the next development version: **${{ steps.version.outputs.next_snapshot_version }}**.
+            - This PR brings those updates into `develop`.
+          branch: ${{ steps.prepare_branch.outputs.actual_branch_name }}
+          base: develop
+          delete-branch: false # Keep the release branch for history, or set to true if desired
+          draft: false
+
+      - name: Auto-Merge PR into Develop
+        if: ${{ steps.create_pr.outputs.pull_request_number && steps.create_pr.outputs.pull_request_operation == 'created' }}
+        uses: actions/github-script@v7
+        with:
+          # For overriding branch protections, GITHUB_TOKEN needs admin rights or a PAT should be used.
+          # If using PAT, set as `github-token: ${{ secrets.PAT_TOKEN }}`.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = ${{ steps.create_pr.outputs.pull_request_number }};
+            console.log(`Attempting to merge PR #${prNumber}`);
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                merge_method: 'merge', // Options: 'merge', 'squash', 'rebase'
+              });
+              console.log(`PR #${prNumber} merged successfully.`);
+            } catch (error) {
+              console.error(`Failed to merge PR #${prNumber}: ${error.message}`);
+              // Optionally, fail the workflow if merge fails and it's critical
+              // core.setFailed(`Failed to merge PR #${prNumber}: ${error.message}`);
+            }
