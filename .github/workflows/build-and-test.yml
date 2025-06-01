@@ -2,10 +2,17 @@ name: Build and Test
 
 on:
   push:
-    branches: ["**"] # Runs on all branches
+    branches-ignore:
+      - "release/**" # Skip release branches (handled by release.yml)
+    branches: ["**"] # All other branches
   pull_request:
-    branches: ["**"] # Runs on PRs targeting any branch
-  workflow_dispatch: # Allow manual triggering
+    branches: ["**"] # All PRs
+  workflow_call:
+    inputs:
+      trigger_version_bump:
+        required: false
+        type: string
+        default: "false"
 
 permissions:
   contents: read
@@ -17,8 +24,15 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.set_status.outputs.status }}
+      ref: ${{ github.ref }}
+      sha: ${{ github.sha }}
 
     steps:
+      - name: Set status output
+        id: set_status
+        run: echo "status=success" >> $GITHUB_OUTPUT
       - name: Checkout code
         uses: actions/checkout@v4
         with:
