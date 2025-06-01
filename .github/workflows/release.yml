@@ -1,24 +1,26 @@
-name: Release
+name: Release Build and Test
 
-# ── 1) Trigger conditions ─────────────────────────────────────────────
 on:
   push:
     branches:
       - "release/**"
+  pull_request:
+    branches:
+      - "release/**"
   workflow_dispatch:
 
-# ── 2) Grant “contents: write” so that GITHUB_TOKEN can create a release ─
 permissions:
-  contents: write
+  contents: read
+  pull-requests: read
 
 env:
   MAVEN_OPTS: -Dmaven.repo.local=.m2/repository
   DOCKER_IMAGE: your-org/your-app
 
 jobs:
-  prepare-release:
+  build-and-test:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -31,33 +33,20 @@ jobs:
           distribution: "temurin"
           java-version: "21"
           cache: "maven"
+          cache-dependency-path: "pom.xml"
 
       - name: Build and test
         run: mvn -B clean verify
-
-      - name: Get current version
-        id: version
+        
+      - name: Verify version is not SNAPSHOT
+        if: github.event_name == 'push'  # Only check on push to release branch
         run: |
-          # Get current version and remove -SNAPSHOT if present
-          CURRENT_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
-          RELEASE_VERSION=$(echo "$CURRENT_VERSION" | sed -e 's/-SNAPSHOT//')
-
-          # Parse version components
-          IFS='.' read -r -a version_parts <<< "${RELEASE_VERSION##v}"
-          major="${version_parts[0]}"
-          minor="${version_parts[1]}"
-          patch="${version_parts[2]}"
-
-          # Bump patch version for next development iteration
-          NEXT_PATCH=$((patch + 1))
-          NEXT_VERSION="$major.$minor.${NEXT_PATCH}-SNAPSHOT"
-
-          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
-          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-
-          # Set environment variables for subsequent steps in the same job
-          echo "RELEASE_VERSION=$RELEASE_VERSION" >> $GITHUB_ENV
-          echo "NEXT_VERSION=$NEXT_VERSION" >> $GITHUB_ENV
+          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          if [[ "$VERSION" == *"-SNAPSHOT" ]]; then
+            echo "Error: Release branch should not contain SNAPSHOT version"
+            exit 1
+          fi
+        id: version
 
       - name: Set release version
         run: |
