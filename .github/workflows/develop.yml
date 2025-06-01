@@ -1,0 +1,90 @@
+name: Develop Branch CI/CD
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ develop ]
+
+env:
+  MAVEN_OPTS: -Dmaven.repo.local=.m2/repository
+  DOCKER_IMAGE: your-org/your-app
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed for version calculation
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "maven"
+          cache-dependency-path: "pom.xml"  # Using direct path to pom.xml
+
+      - name: Build and test
+        run: |
+          mvn -B clean verify
+
+    # Code coverage reporting (uncomment if you use JaCoCo or similar)
+    # - name: Upload coverage report
+    #   uses: codecov/codecov-action@v4
+    #   with:
+    #     fail_ci_if_error: false
+
+    # Static code analysis (SonarQube example - uncomment and configure as needed)
+    # - name: SonarQube Scan
+    #   uses: SonarSource/sonarqube-scan-action@master
+    #   env:
+    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # Uncomment and configure this job if you want to build and push Docker images
+  # docker-build:
+  #   needs: build-and-test
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+
+  #     - name: Set up Docker Buildx
+  #       uses: docker/setup-buildx-action@v3
+
+  #     - name: Login to Docker Hub
+  #       uses: docker/login-action@v3
+  #       with:
+  #         username: ${{ secrets.DOCKERHUB_USERNAME }}
+  #         password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  #     - name: Build and push development image
+  #       uses: docker/build-push-action@v5
+  #       with:
+  #         context: .
+  #         push: true
+  #         tags: ${{ env.DOCKER_IMAGE }}:dev
+
+  # Create version tag when merging to develop (example - adjust to your versioning strategy)
+  # version-tag:
+  #   needs: [build-and-test]
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #
+  #     - name: Bump version and push tag
+  #       uses: mathieudutour/github-tag-action@v6
+  #       with:
+  #         github_token: ${{ secrets.GITHUB_TOKEN }}
+  #         default_bump: minor
+  #         tag_prefix: v
+  #         create_annotated_tag: true
